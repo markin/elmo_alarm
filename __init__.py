@@ -1,20 +1,19 @@
 """Support for e-connect Elmo alarm system."""
 from collections import namedtuple
 from datetime import timedelta
-from urllib3.exceptions import HTTPError
-
 import logging
 
 from elmo.api.client import ElmoClient
 from elmo.api.exceptions import PermissionDenied
+from urllib3.exceptions import HTTPError
 import voluptuous as vol
 
 from homeassistant.const import (
     CONF_HOST,
-    CONF_USERNAME,
-    CONF_PASSWORD,
     CONF_NAME,
+    CONF_PASSWORD,
     CONF_SCAN_INTERVAL,
+    CONF_USERNAME,
     STATE_ALARM_ARMED_AWAY,
     STATE_ALARM_ARMED_CUSTOM_BYPASS,
     STATE_ALARM_ARMED_HOME,
@@ -33,10 +32,9 @@ DOMAIN = "elmo_alarm"
 CONF_VENDOR = "vendor"
 
 CONF_STATES = "states"
-CONF_NAME = CONF_NAME
 CONF_ZONES = "zones"
 
-DEFAULT_SCAN_INTERVAL = timedelta(seconds=10)
+DEFAULT_SCAN_INTERVAL = timedelta(seconds=5)
 
 SIGNAL_ZONE_CHANGED = "elmo_alarm.zone_changed"
 SIGNAL_INPUT_CHANGED = "elmo_alarm.input_changed"
@@ -93,6 +91,8 @@ async def async_setup(hass, config):
     states = conf[CONF_STATES]
     scan_interval = conf[CONF_SCAN_INTERVAL]
 
+    _LOGGER.warning("Scan Interval: %s", scan_interval)
+
     client = ElmoClientWrapper(host, vendor, username, password, states)
     await client.update()
 
@@ -103,7 +103,7 @@ async def async_setup(hass, config):
             hass,
             "binary_sensor",
             DOMAIN,
-            {"zones": client._zones, "inputs": client._inputs},
+            {"zones": client.zones, "inputs": client.inputs},
             config,
         )
     )
@@ -113,14 +113,14 @@ async def async_setup(hass, config):
     )
 
     async def update():
-        _LOGGER.debug("Connecting to e-connect to retrieve states.")
+        _LOGGER.debug("Connecting to e-connect to retrieve states")
         await client.update()
-        async_dispatcher_send(hass, SIGNAL_ARMING_STATE_CHANGED, client._state)
+        async_dispatcher_send(hass, SIGNAL_ARMING_STATE_CHANGED, client.state)
 
-        for zone in client._zones:
+        for zone in client.zones:
             async_dispatcher_send(hass, SIGNAL_ZONE_CHANGED, zone)
 
-        for inp in client._inputs:
+        for inp in client.inputs:
             async_dispatcher_send(hass, SIGNAL_INPUT_CHANGED, inp)
 
         async_call_later(
@@ -132,33 +132,41 @@ async def async_setup(hass, config):
     await update()
 
     return True
-    
+
 
 class ElmoClientWrapper(ElmoClient):
-    '''Wrapping the Elmo client class to adapt it to home assistant'''
+    """Wrapping the Elmo client class to adapt it to home assistant."""
+
     def __init__(self, host, vendor, username, password, states_config):
+        """Initialize the elmo client wrapper."""
+
         self._username = username
         self._password = password
         self._states_config = states_config
         self._data = None
-        self._states = None
-        self._state = None
+        self.state = None
+        self.states = None
+        self.zones = None
+        self.inputs = None
 
         ElmoClient.__init__(self, host, vendor)
 
     async def update(self):
-        '''Get updates and refresh internal states'''
+        """Get updates and refresh internal states."""
         try:
             data = self.check()
         except PermissionDenied as e:
-            _LOGGER.warning(f"Invalid session, trying to authenticate: {e}.")
+            _LOGGER.warning("Invalid session, trying to authenticate %s", e)
             try:
                 self.auth(self._username, self._password)
                 data = self.check()
             except PermissionDenied as e:
-                _LOGGER.warning(f"Invalid credentials: {e}.")
+                _LOGGER.warning("Invalid credentials: %s", e)
             except HTTPError as e:
-                _LOGGER.warning(f"Got HTTP error when authenticating. Check credentials. Code: {e.response.status_code}.")
+                _LOGGER.warning(
+                    "Got HTTP error when authenticating. Check credentials. Code: %s",
+                    e.response.status_code,
+                )
 
         if self._data is None:
             await self._configure_states()
@@ -168,59 +176,63 @@ class ElmoClientWrapper(ElmoClient):
         await self._update_input_state()
 
     async def _configure_states(self):
+        """Initialize the elmo alarm states."""
         state_config = {}
         for state in self._states_config:
-            state_config[state[CONF_NAME]] = state[STATE_ZONES]
-        self._states = state_config
+            state_config[state[CONF_NAME]] = state[CONF_ZONES]
+        self.states = state_config
 
     async def _update_arm_state(self):
+        """Update the elmo alarm states."""
         areas_armed = self._data["areas_armed"]
 
-        if len(areas_armed) == 0:
-            self._state = STATE_ALARM_DISARMED
+        if not areas_armed:
+            self.state = STATE_ALARM_DISARMED
         else:
             armed_indexes = [x["index"] + 1 for x in areas_armed]
 
             state = [
                 state
-                for state, areas in self._states.items()
+                for state, areas in self.states.items()
                 if set(areas) == set(armed_indexes)
             ]
 
-            if len(state) > 0:
+            if state:
                 state = state[0]
                 if state == "arm_away":
-                    self._state = STATE_ALARM_ARMED_AWAY
+                    self.state = STATE_ALARM_ARMED_AWAY
                 elif state == "arm_home":
-                    self._state = STATE_ALARM_ARMED_HOME
+                    self.state = STATE_ALARM_ARMED_HOME
                 elif state == "arm_night":
-                    self._state = STATE_ALARM_ARMED_NIGHT
+                    self.state = STATE_ALARM_ARMED_NIGHT
                 elif state == "arm_custom_bypass":
-                    self._state = STATE_ALARM_ARMED_CUSTOM_BYPASS
+                    self.state = STATE_ALARM_ARMED_CUSTOM_BYPASS
                 else:
-                    self._state = None
+                    self.state = None
             else:
-                self._state = None
+                self.state = None
 
     async def _update_zone_state(self):
-        self._zones = [
+        """Update the elmo alarm zone's states."""
+        self.zones = [
             ZoneData(zone_id=area["index"], zone_name=area["name"], state=ZONE_ARMED)
             for area in self._data["areas_armed"]
             if area["name"] != "Unknown"
         ]
-        self._zones += [
+        self.zones += [
             ZoneData(zone_id=area["index"], zone_name=area["name"], state=ZONE_DISARMED)
             for area in self._data["areas_disarmed"]
             if area["name"] != "Unknown"
         ]
 
     async def _update_input_state(self):
-        self._inputs = [
+        """Update the elmo alarm input's states."""
+        self.inputs = [
             InputData(input_id=inp["index"], input_name=inp["name"], state=INPUT_ALERT)
             for inp in self._data["inputs_alerted"]
             if inp["name"] != "Unknown"
         ]
-        self._inputs += [
+        self.inputs += [
             InputData(input_id=inp["index"], input_name=inp["name"], state=INPUT_WAIT)
             for inp in self._data["inputs_wait"]
             if inp["name"] != "Unknown"

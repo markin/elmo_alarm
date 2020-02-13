@@ -2,7 +2,10 @@
 
 import logging
 
-import homeassistant.components.alarm_control_panel as alarm
+from homeassistant.components.alarm_control_panel import (
+    FORMAT_NUMBER,
+    AlarmControlPanel,
+)
 from homeassistant.components.alarm_control_panel.const import (
     SUPPORT_ALARM_ARM_AWAY,
     SUPPORT_ALARM_ARM_CUSTOM_BYPASS,
@@ -27,7 +30,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     async_add_entities([device])
 
 
-class ElmoAlarmPanel(alarm.AlarmControlPanel):
+class ElmoAlarmPanel(AlarmControlPanel):
     """Representation of an e-connect Elmo alarm panel."""
 
     def __init__(self, client, name):
@@ -61,7 +64,7 @@ class ElmoAlarmPanel(alarm.AlarmControlPanel):
     @property
     def code_format(self):
         """Return the regex for code format or None if no code is required."""
-        return alarm.FORMAT_NUMBER
+        return FORMAT_NUMBER
 
     @property
     def state(self):
@@ -69,7 +72,7 @@ class ElmoAlarmPanel(alarm.AlarmControlPanel):
         return self._state
 
     @property
-    def supported_features(self) -> int:
+    def supported_features(self):
         """Return the list of supported features."""
 
         return (
@@ -90,28 +93,28 @@ class ElmoAlarmPanel(alarm.AlarmControlPanel):
         """Send arm away command."""
 
         with self._client.lock(code) as client:
-            for zone in self._client._states["arm_away"]:
+            for zone in self._client.states["arm_away"]:
                 client.arm_sector(zone)
 
     async def async_alarm_arm_home(self, code=None):
         """Send arm home command."""
 
         with self._client.lock(code) as client:
-            for zone in self._client._states["arm_home"]:
+            for zone in self._client.states["arm_home"]:
                 client.arm_sector(zone)
 
     async def async_alarm_arm_night(self, code=None):
         """Send arm home command."""
 
         with self._client.lock(code) as client:
-            for zone in self._client._states["arm_night"]:
+            for zone in self._client.states["arm_night"]:
                 client.arm_sector(zone)
 
     async def async_alarm_arm_custom_bypass(self, code=None):
         """Send arm home command."""
 
         with self._client.lock(code) as client:
-            for zone in self._client._states["arm_custom_bypass"]:
+            for zone in self._client.states["arm_custom_bypass"]:
                 client.arm_sector(zone)
 
     @callback
