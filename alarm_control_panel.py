@@ -13,6 +13,12 @@ from homeassistant.components.alarm_control_panel.const import (
     SUPPORT_ALARM_ARM_NIGHT,
     SUPPORT_ALARM_TRIGGER,
 )
+from homeassistant.const import (
+    STATE_ALARM_ARMED_AWAY,
+    STATE_ALARM_ARMED_CUSTOM_BYPASS,
+    STATE_ALARM_ARMED_HOME,
+    STATE_ALARM_ARMED_NIGHT,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
@@ -93,29 +99,25 @@ class ElmoAlarmPanel(AlarmControlPanel):
         """Send arm away command."""
 
         with self._client.lock(code) as client:
-            for zone in self._client.states["arm_away"]:
-                client.arm_sector(zone)
+            client.arm_sector(self._client.states[STATE_ALARM_ARMED_AWAY])
 
     async def async_alarm_arm_home(self, code=None):
         """Send arm home command."""
 
         with self._client.lock(code) as client:
-            for zone in self._client.states["arm_home"]:
-                client.arm_sector(zone)
+            client.arm_sector(self._client.states[STATE_ALARM_ARMED_HOME])
 
     async def async_alarm_arm_night(self, code=None):
         """Send arm home command."""
 
         with self._client.lock(code) as client:
-            for zone in self._client.states["arm_night"]:
-                client.arm_sector(zone)
+            client.arm_sector(self._client.states[STATE_ALARM_ARMED_NIGHT])
 
     async def async_alarm_arm_custom_bypass(self, code=None):
         """Send arm home command."""
 
         with self._client.lock(code) as client:
-            for zone in self._client.states["arm_custom_bypass"]:
-                client.arm_sector(zone)
+            client.arm_sector(self._client.states[STATE_ALARM_ARMED_CUSTOM_BYPASS])
 
     @callback
     def _schedule_immediate_update(self):

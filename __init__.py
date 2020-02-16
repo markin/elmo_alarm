@@ -8,6 +8,8 @@ from elmo.api.exceptions import PermissionDenied
 from urllib3.exceptions import HTTPError
 import voluptuous as vol
 
+from homeassistant.components.alarm_control_panel import DOMAIN as ALARM_DOMAIN
+from homeassistant.components.binary_sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.const import (
     CONF_HOST,
     CONF_NAME,
@@ -34,14 +36,12 @@ CONF_VENDOR = "vendor"
 CONF_STATES = "states"
 CONF_ZONES = "zones"
 
-DEFAULT_SCAN_INTERVAL = timedelta(seconds=5)
+DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)
+DEFAULT_HOST = "https://connect.elmospa.com"
 
-SIGNAL_ZONE_CHANGED = "elmo_alarm.zone_changed"
-SIGNAL_INPUT_CHANGED = "elmo_alarm.input_changed"
-SIGNAL_ARMING_STATE_CHANGED = "elmo_alarm.arming_state_changed"
-
-INPUT_TYPE = "opening"
-ZONE_TYPE = "safety"
+SIGNAL_ZONE_CHANGED = f"{DOMAIN}.zone_changed"
+SIGNAL_INPUT_CHANGED = f"{DOMAIN}.input_changed"
+SIGNAL_ARMING_STATE_CHANGED = f"{DOMAIN}.arming_state_changed"
 
 ZONE_ARMED = 0
 ZONE_DISARMED = 1
@@ -55,7 +55,14 @@ InputData = namedtuple("InputData", ["input_id", "input_name", "state"])
 
 STATE_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_NAME): cv.string,
+        vol.Required(CONF_NAME): vol.In(
+            [
+                STATE_ALARM_ARMED_HOME,
+                STATE_ALARM_ARMED_AWAY,
+                STATE_ALARM_ARMED_NIGHT,
+                STATE_ALARM_ARMED_CUSTOM_BYPASS,
+            ]
+        ),
         vol.Required(CONF_ZONES): vol.All(cv.ensure_list),
     }
 )
@@ -64,7 +71,7 @@ CONFIG_SCHEMA = vol.Schema(
     {
         DOMAIN: vol.Schema(
             {
-                vol.Required(CONF_HOST): cv.string,
+                vol.Required(CONF_HOST, default=DEFAULT_HOST): cv.url,
                 vol.Required(CONF_VENDOR): cv.string,
                 vol.Required(CONF_USERNAME): cv.string,
                 vol.Required(CONF_PASSWORD): cv.string,
@@ -91,8 +98,6 @@ async def async_setup(hass, config):
     states = conf[CONF_STATES]
     scan_interval = conf[CONF_SCAN_INTERVAL]
 
-    _LOGGER.warning("Scan Interval: %s", scan_interval)
-
     client = ElmoClientWrapper(host, vendor, username, password, states)
     await client.update()
 
@@ -101,16 +106,14 @@ async def async_setup(hass, config):
     hass.async_create_task(
         async_load_platform(
             hass,
-            "binary_sensor",
+            SENSOR_DOMAIN,
             DOMAIN,
             {"zones": client.zones, "inputs": client.inputs},
             config,
         )
     )
 
-    hass.async_create_task(
-        async_load_platform(hass, "alarm_control_panel", DOMAIN, {}, config)
-    )
+    hass.async_create_task(async_load_platform(hass, ALARM_DOMAIN, DOMAIN, {}, config))
 
     async def update():
         _LOGGER.debug("Connecting to e-connect to retrieve states")
@@ -155,17 +158,16 @@ class ElmoClientWrapper(ElmoClient):
         """Get updates and refresh internal states."""
         try:
             data = self.check()
-        except PermissionDenied as e:
-            _LOGGER.warning("Invalid session, trying to authenticate %s", e)
+        except PermissionDenied as exception:
+            _LOGGER.warning("Invalid session, trying to authenticate %s", exception)
             try:
                 self.auth(self._username, self._password)
                 data = self.check()
-            except PermissionDenied as e:
-                _LOGGER.warning("Invalid credentials: %s", e)
-            except HTTPError as e:
+            except PermissionDenied as exception:
+                _LOGGER.warning("Invalid credentials: %s", exception)
+            except HTTPError as exception:
                 _LOGGER.warning(
-                    "Got HTTP error when authenticating. Check credentials. Code: %s",
-                    e.response.status_code,
+                    "Got HTTP error when authenticating: %s", exception,
                 )
 
         if self._data is None:
@@ -189,51 +191,74 @@ class ElmoClientWrapper(ElmoClient):
         if not areas_armed:
             self.state = STATE_ALARM_DISARMED
         else:
-            armed_indexes = [x["index"] + 1 for x in areas_armed]
+            armed_indexes = [area_data["element"] for area_data in areas_armed]
 
-            state = [
-                state
-                for state, areas in self.states.items()
-                if set(areas) == set(armed_indexes)
-            ]
+            matching_state = filter(
+                lambda state: set(state[1]) == set(armed_indexes), self.states.items()
+            )
 
-            if state:
-                state = state[0]
-                if state == "arm_away":
-                    self.state = STATE_ALARM_ARMED_AWAY
-                elif state == "arm_home":
-                    self.state = STATE_ALARM_ARMED_HOME
-                elif state == "arm_night":
-                    self.state = STATE_ALARM_ARMED_NIGHT
-                elif state == "arm_custom_bypass":
-                    self.state = STATE_ALARM_ARMED_CUSTOM_BYPASS
-                else:
-                    self.state = None
-            else:
-                self.state = None
+            # Get the state name in position 0 or None
+            state = next((name for name, zone_list in matching_state), None)
+
+            self.state = state
 
     async def _update_zone_state(self):
         """Update the elmo alarm zone's states."""
-        self.zones = [
-            ZoneData(zone_id=area["index"], zone_name=area["name"], state=ZONE_ARMED)
-            for area in self._data["areas_armed"]
-            if area["name"] != "Unknown"
-        ]
-        self.zones += [
-            ZoneData(zone_id=area["index"], zone_name=area["name"], state=ZONE_DISARMED)
-            for area in self._data["areas_disarmed"]
-            if area["name"] != "Unknown"
-        ]
+        self.zones = []
+
+        zones_armed = list(
+            filter(lambda zone: (zone["name"] != "Unknown"), self._data["areas_armed"])
+        )
+        zones_disarmed = list(
+            filter(
+                lambda zone: (zone["name"] != "Unknown"), self._data["areas_disarmed"]
+            )
+        )
+
+        for zone in zones_armed:
+            self.zones.append(
+                ZoneData(
+                    zone_id=zone["index"], zone_name=zone["name"], state=ZONE_ARMED
+                )
+            )
+
+        for zone in zones_disarmed:
+            self.zones.append(
+                ZoneData(
+                    zone_id=zone["index"], zone_name=zone["name"], state=ZONE_DISARMED
+                )
+            )
 
     async def _update_input_state(self):
         """Update the elmo alarm input's states."""
-        self.inputs = [
-            InputData(input_id=inp["index"], input_name=inp["name"], state=INPUT_ALERT)
-            for inp in self._data["inputs_alerted"]
-            if inp["name"] != "Unknown"
-        ]
-        self.inputs += [
-            InputData(input_id=inp["index"], input_name=inp["name"], state=INPUT_WAIT)
-            for inp in self._data["inputs_wait"]
-            if inp["name"] != "Unknown"
-        ]
+        self.inputs = []
+
+        inputs_alert = list(
+            filter(
+                lambda input_: (input_["name"] != "Unknown"),
+                self._data["inputs_alerted"],
+            )
+        )
+        inputs_wait = list(
+            filter(
+                lambda input_: (input_["name"] != "Unknown"), self._data["inputs_wait"]
+            )
+        )
+
+        for input_ in inputs_alert:
+            self.inputs.append(
+                InputData(
+                    input_id=input_["index"],
+                    input_name=input_["name"],
+                    state=INPUT_ALERT,
+                )
+            )
+
+        for input_ in inputs_wait:
+            self.inputs.append(
+                InputData(
+                    input_id=input_["index"],
+                    input_name=input_["name"],
+                    state=INPUT_WAIT,
+                )
+            )
